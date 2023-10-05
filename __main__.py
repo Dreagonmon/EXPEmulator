@@ -4,6 +4,7 @@ from core import keys
 from collections import deque
 import os
 import threading
+import argparse
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 
@@ -102,6 +103,18 @@ class PYGameUIInterface(expemu.UIInterface):
         pygame.display.flip()
 
 def mainloop():
+    # parse args from cli
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "exp",
+        metavar="<ExistOS Program Path>",
+        help="ExistOS program file path (*.exp)",
+    )
+    args = parser.parse_args()
+    if not args.exp.lower().endswith(".exp"):
+        print("Error: file should be *.exp")
+        return
+    # init pygame
     pygame.init()
     pygame.display.set_caption("EXP Emulator")
     # init screen
@@ -124,8 +137,7 @@ def mainloop():
     # init rootfs
     os.makedirs(ROOTFS, exist_ok=True)
     # init emu
-    emu = expemu.Emulator(gui, ROOTFS, "archivers/useless.exp")
-    # emu = expemu.Emulator(gui, ROOTFS, "archivers/CoreMark.exp")
+    emu = expemu.Emulator(gui, ROOTFS, args.exp)
     # init pygame clock
     clock = pygame.time.Clock()
     # running
