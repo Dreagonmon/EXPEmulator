@@ -2,6 +2,7 @@ from . import llapi
 from unicorn import arm_const
 from typing import Union, Tuple
 from pathlib import PurePosixPath, PurePath
+from traceback import print_exc
 import unicorn
 import datetime
 import time
@@ -49,11 +50,17 @@ class UIInterface:
         """ draw 8x16 text at position x, y with color bg, fg """
         raise NotImplemented()
     
+    def get_pixel(self, x, y) -> int:
+        raise NotImplemented()
+    
     def is_key_down(self, key_id) -> bool:
         raise NotImplemented()
     
     def query_key_event(self) -> Union[None, Tuple[bool, int]]:
         """ fetch one key event (pressed, key_id), return None if there is no event. """
+        raise NotImplemented()
+    
+    def app_quit(self):
         raise NotImplemented()
 
 class Emulator:
@@ -90,7 +97,7 @@ class Emulator:
         self.tid = 0
 
     def mem_fault(self, uc, access, address, size, value, data):
-        # print(">>> mem fault address:0x%08X, sz:%d" % (address, size))
+        print(">>> mem fault address:0x%08X, sz:%d" % (address, size))
         self.dumpreg()
         self.run = False
     
@@ -114,11 +121,11 @@ class Emulator:
             strs += (c)
             vptr = vptr + 1
             c = self.emu.mem_read(vptr, 1)
-        strs = strs.decode()
+        strs = strs.decode("utf-8")
         return strs
     
     def write_str_to_vm(self, s, vptr):
-        strs = str(s+"\x00").encode()
+        strs = str(s+"\x00").encode("utf-8")
         self.emu.mem_write(vptr, strs)
 
     def do_llapi(self):
@@ -151,15 +158,26 @@ class Emulator:
             self.emu.reg_write(arm_const.UC_ARM_REG_R0, s)
             return True
         
+        elif swicode == llapi.LLAPI_APP_EXIT:
+            self.ui.app_quit()
+            self.run - False
+            return True
         
-        elif swicode == llapi.LL_SWI_FS_DIR_MKDIR:
-            p = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
-            path = self.read_str_from_vm(p) 
-            path = virtual_path_to_real_path(self.rootfs, path)
-
-            # print("MKDIR:", path)
-            os.makedirs(path, exist_ok=True) 
-            self.emu.reg_write(arm_const.UC_ARM_REG_R0, 0)
+        elif swicode == llapi.LLAPI_THREAD_CREATE:
+            # FIXME: implement thread
+            self.emu.reg_write(arm_const.UC_ARM_REG_R0, -1)
+            return True
+        
+        elif swicode == llapi.LLAPI_SET_PERF_LEVEL:
+            _ = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
+            return True
+        
+        elif swicode == llapi.LL_SWI_ICACHE_INV:
+            return True
+        
+        elif swicode == llapi.LL_SWI_DCACHE_CLEAN:
+            _ = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
+            _ = self.emu.reg_read(arm_const.UC_ARM_REG_R1)
             return True
         
         elif swicode == llapi.LLAPI_APP_DISP_PUT_P:
@@ -177,7 +195,12 @@ class Emulator:
             for b in dat:
                 self.ui.fill_rect(x, y, 1, 1, b)
                 x += 1
-            
+            return True
+        
+        elif swicode == llapi.LLAPI_APP_DISP_GET_P:
+            x = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
+            y = self.emu.reg_read(arm_const.UC_ARM_REG_R1)
+            self.emu.reg_write(arm_const.UC_ARM_REG_R0, self.ui.get_pixel(x, y))
             return True
         
         elif swicode == llapi.LLAPI_APP_DISP_CLEAN: 
@@ -373,7 +396,6 @@ class Emulator:
             self.emu.reg_write(arm_const.UC_ARM_REG_R0, 0)
             return True
 
-
         elif swicode == llapi.LL_SWI_FS_CLOSE:
             fobj_ptr = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             if fobj_ptr in self.f_open_list:
@@ -392,7 +414,15 @@ class Emulator:
             # print("Chk sz:%s, %d" % (self.f_open_list[fobj_ptr]["path"], sz))
             self.emu.reg_write(arm_const.UC_ARM_REG_R0, sz) 
             return True
-
+        
+        elif swicode == llapi.LL_SWI_FS_DIR_MKDIR:
+            p = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
+            path = self.read_str_from_vm(p) 
+            path = virtual_path_to_real_path(self.rootfs, path)
+            # print("MKDIR:", path)
+            os.makedirs(path, exist_ok=True) 
+            self.emu.reg_write(arm_const.UC_ARM_REG_R0, 0)
+            return True
 
         elif swicode == llapi.LL_SWI_FS_DIR_OPEN:
             if self.emu.reg_read(arm_const.UC_ARM_REG_R0) in self.dir_open_list:
@@ -418,6 +448,25 @@ class Emulator:
             self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["items"] = [".", ".."] + os.listdir(path)
             # print("Open dir:", self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["path"],
             #      self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["total"] )
+            return True
+        
+        elif swicode == llapi.LL_SWI_FS_DIR_REWIND:
+            self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["iter"] = 0
+            return True
+        
+        elif swicode == llapi.LL_SWI_FS_DIR_TELL:
+            pos = self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["iter"]
+            self.emu.reg_write(arm_const.UC_ARM_REG_R0, pos)
+            return True
+        
+        elif swicode == llapi.LL_SWI_FS_DIR_SEEK:
+            d = self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]
+            pos = self.emu.reg_read(arm_const.UC_ARM_REG_R1)
+            if pos < 0 or pos > d["total"]:
+                self.emu.reg_write(arm_const.UC_ARM_REG_R0, -1)
+                return True
+            d["iter"] = pos
+            self.emu.reg_write(arm_const.UC_ARM_REG_R0, 0)
             return True
         
         elif swicode == llapi.LL_SWI_FS_DIR_READ:
@@ -448,7 +497,7 @@ class Emulator:
         elif swicode == llapi.LL_SWI_FS_DIR_GET_CUR_NAME:
             dirobj = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             if dirobj not in self.dir_open_list:
-                self.emu.reg_write(arm_const.UC_ARM_REG_R0, -1)
+                self.emu.reg_write(arm_const.UC_ARM_REG_R0, 0) # NULL
                 return True
             d = self.dir_open_list[dirobj]
             self.write_str_to_vm(d["items"][d["iter"] - 1], dirobj)
@@ -468,7 +517,6 @@ class Emulator:
                 sz = 0
             self.emu.reg_write(arm_const.UC_ARM_REG_R0, sz)
             return True
-
         
         elif swicode == llapi.LL_SWI_FS_DIR_CLOSE:
             if self.emu.reg_read(arm_const.UC_ARM_REG_R0) in self.dir_open_list:
@@ -586,7 +634,7 @@ class Emulator:
                     self.CurPC = self.emu.reg_read(arm_const.UC_ARM_REG_PC) 
                     if(self.do_llapi() == False):
                         self.run = False
-                        # print(e)
+                        print_exc()
                     
                     self.emu.context_update(self.thread_list[self.select_thread]["context"])
                     self.thread_list[self.select_thread]["PC"] = self.CurPC
@@ -597,8 +645,8 @@ class Emulator:
                     self.t1 = datetime.datetime.now().timestamp()
                 elif (e.errno == unicorn.UC_ERR_READ_UNMAPPED) or (e.errno == unicorn.UC_ERR_WRITE_UNMAPPED):
                     self.run = False
-                    # print(e)
+                    print_exc()
                 else:
-                    # print(e)
                     self.dumpreg()
                     self.run = False
+                    print_exc()

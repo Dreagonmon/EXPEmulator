@@ -2,6 +2,7 @@ from typing import Tuple, Union, Deque
 from core import expemu
 from core import keys
 from collections import deque
+import sys
 import os
 import threading
 import argparse
@@ -72,6 +73,10 @@ class PYGameUIInterface(expemu.UIInterface):
             (x, y, w, h)
         )
     
+    def get_pixel(self, x, y):
+        p = self.surface.get_at((x, y))
+        return sum(p.r + p.g + p.b) // (0xFF * 3)
+    
     def draw_text(self, text, x, y, bg, fg):
         print(f"Drawing '{text}' at {x}, {y} with color bg {bg}, fg {fg}.")
     
@@ -85,6 +90,10 @@ class PYGameUIInterface(expemu.UIInterface):
             return None
         else:
             return self.key_event_queue.popleft()
+    
+    def app_quit(self):
+        pygame.quit()
+        sys.exit()
     
     def _push_key_event(self, pressed: bool, key_id: int):
         self.key_event_queue.append((pressed, key_id))
