@@ -88,7 +88,6 @@ class Emulator:
 
         self.emu.mem_write(self.EXP_ROM_ADDR, open(self.exp_file_path, "rb").read())
         self.emu.hook_add(unicorn.UC_HOOK_MEM_UNMAPPED, self.mem_fault) 
-        #self.emu.hook_add(UC_HOOK_BLOCK, self.hook_block) 
         self.dir_open_list = {}
         self.f_open_list = {}
         self.mmap_list = {}
@@ -96,23 +95,23 @@ class Emulator:
         self.select_thread = 0
         self.tid = 0
 
-    def mem_fault(self, uc, access, address, size, value, data):
+    def mem_fault(self, uc: unicorn.unicorn.Uc, access, address, size, value, data):
+        retn_addr = self.emu.reg_read(arm_const.UC_ARM_REG_R14)
+        pc_ptr = self.emu.reg_read(arm_const.UC_ARM_REG_PC)
+        if retn_addr == 0 and pc_ptr == 0:
+            # ignore error, it maybe sub thread end.
+            return
         print(">>> mem fault address:0x%08X, sz:%d" % (address, size))
         self.dumpreg()
-        self.run = False
     
-    
-    def hook_block(self, uc, address, size, user_data):
-        #self.run_cnt += size
-        pass
-        ## print(">>> Tracing basic block at 0x%x, block size = %d" %(address, size))
-
     def dumpreg(self):
         for i in range(arm_const.UC_ARM_REG_R0, arm_const.UC_ARM_REG_R12 + 1):
             print("R%d: %08X" % (i-arm_const.UC_ARM_REG_R0, self.emu.reg_read(i)))
+        print("R14:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_R14))
         print("SP:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_SP))
         print("LR:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_LR))
         print("PC:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_PC))
+        print("Thread id: %d" % self.select_thread)
     
     def read_str_from_vm(self, vptr):
         c = self.emu.mem_read(vptr, 1)
@@ -539,23 +538,26 @@ class Emulator:
         elif swicode == llapi.LLAPI_THREAD_CREATE:
             pcode = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             stack = self.emu.reg_read(arm_const.UC_ARM_REG_R1)
-            stackSz = self.emu.reg_read(arm_const.UC_ARM_REG_R2)
+            stackSz = self.emu.reg_read(arm_const.UC_ARM_REG_R2) * 4
             par = self.emu.reg_read(arm_const.UC_ARM_REG_R3)
 
             self.thread_list[self.tid] = {}
             self.thread_list[self.tid]["context"] = self.emu.context_save()
             self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_R0, par)
-            self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_SP, stack + stackSz - 4)
+            self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_SP, (stack + stackSz - 4) & (~0b111)) # align to 8
+            self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_R14, 0) # set return address to NULL
             self.thread_list[self.tid]["delay"] = 0
-            self.thread_list[self.tid]["PC"] = pcode 
+            self.thread_list[self.tid]["PC"] = pcode
             self.tid += 1
             # print("Create Thread:%08X" % pcode)
             return True
         
         elif swicode == llapi.LLAPI_APP_DELAY_MS:
             #time.sleep(self.emu.reg_read(arm_const.UC_ARM_REG_R0)/1000.0)
+            delay_ms = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             ms = int(time.time_ns() / 1_000_000)
-            self.thread_list[self.select_thread]["delay"] = ms + self.emu.reg_read(arm_const.UC_ARM_REG_R0)
+            self.thread_list[self.select_thread]["delay"] = ms + delay_ms
+            # print(f"Thread: {self.select_thread}, Delay: {delay_ms}")
             return True
         
         # print("Unknown SWI CODE:%08X" % swicode)
@@ -568,18 +570,39 @@ class Emulator:
             self.run_cnt = 0
 
     def thread_switch(self):
+        # print("================")
+        # find next thread
         self.select_thread += 1
-        if(self.select_thread >= self.tid):
-            self.select_thread = 0
-
-        # delay in ms
-        while self.thread_list[self.select_thread]["delay"] > int(time.time_ns() / 1_000_000):
-            self.select_thread += 1
-            if(self.select_thread >= self.tid):
+        finding_next_thread = True # should we continue finding
+        while finding_next_thread:
+            for tid in self.thread_list:
+                if tid >= self.select_thread:
+                    # print(f"thread found {tid}")
+                    finding_next_thread = False
+                    self.select_thread = tid
+                    break
+            if finding_next_thread:
+                # not found, reset and try again
                 self.select_thread = 0
-                #time.sleep(0.01)
-
+                continue
+            if self.thread_list[self.select_thread]["delay"] > int(time.time_ns() / 1_000_000):
+                # in delay, find next
+                # print(f"    thread in delay {self.select_thread}")
+                self.select_thread += 1
+                self.select_thread %= self.tid
+                finding_next_thread = True
+                continue
+        self.thread_list[self.select_thread]["delay"] = 0 # clear delay
+        # print(f"current tid: {self.select_thread}\n")
     
+    def thread_context_save(self):
+        self.emu.context_update(self.thread_list[self.select_thread]["context"])
+        self.thread_list[self.select_thread]["PC"] = self.emu.reg_read(arm_const.UC_ARM_REG_PC)
+    
+    def thread_context_restore(self):
+        self.emu.context_restore(self.thread_list[self.select_thread]["context"])
+        self.emu.reg_write(arm_const.UC_ARM_REG_PC, self.thread_list[self.select_thread]["PC"])
+
     def emu_thread(self):
         self.run_cnt = 0
 
@@ -599,49 +622,40 @@ class Emulator:
         self.thread_list[self.tid]["delay"] = 0
         self.tid += 1
 
-        self.rc = 1000000
+        # self.rc = 1000000
+        self.rc = 100000
         while(self.run):
-            if(self.run):
-                if(True):
-                    ## print(self.t0 - self.t2)
-                    #if(abs(self.t0 - self.t2) > 0.1):
-                    self.thread_switch()
-                    
-                    ## print("switch:" , self.select_thread)
-                    #self.t2 = self.t0
+            self.thread_switch()
             try:
-                self.t0 = datetime.datetime.now().timestamp()
-                
-                self.emu.context_restore(self.thread_list[self.select_thread]["context"])
-                tmode = ((self.emu.reg_read(arm_const.UC_ARM_REG_CPSR) & (1 << 5)) > 0)
-                self.emu.emu_start(
-                    self.thread_list[self.select_thread]["PC"] if not tmode else self.thread_list[self.select_thread]["PC"] | 1, 
-                    self.EXP_ROM_ADDR + self.exp_size,0,self.rc
-                )
-                self.emu.context_update(self.thread_list[self.select_thread]["context"])
-                self.thread_list[self.select_thread]["PC"] = self.emu.reg_read(arm_const.UC_ARM_REG_PC)
-
-                self.t1 = datetime.datetime.now().timestamp()
-                self.run_cnt += self.rc 
+                try:
+                    self.thread_context_restore()
+                    tmode = ((self.emu.reg_read(arm_const.UC_ARM_REG_CPSR) & (1 << 5)) > 0)
+                    self.emu.emu_start(
+                        self.thread_list[self.select_thread]["PC"] if not tmode else self.thread_list[self.select_thread]["PC"] | 1, 
+                        self.EXP_ROM_ADDR + self.exp_size,0,self.rc
+                    )
+                    self.thread_context_save()
+                    self.run_cnt += self.rc 
+                except unicorn.UcError as e:
+                    if e.errno == unicorn.UC_ERR_EXCEPTION:
+                        # llapi exception
+                        self.CurPC = self.emu.reg_read(arm_const.UC_ARM_REG_PC) 
+                        if(self.do_llapi() == False):
+                            raise
+                        self.emu.reg_write(arm_const.UC_ARM_REG_PC, self.CurPC)
+                        self.thread_context_save()
+                        continue
+                    elif e.errno == unicorn.UC_ERR_FETCH_UNMAPPED:
+                        # maybe thread end.
+                        retn_addr = self.emu.reg_read(arm_const.UC_ARM_REG_R14)
+                        pc_ptr = self.emu.reg_read(arm_const.UC_ARM_REG_PC)
+                        if retn_addr == 0 and pc_ptr == 0:
+                            # ignore error, it maybe sub thread end.
+                            print(f"(THREAD {self.select_thread} END)")
+                            del self.thread_list[self.select_thread]
+                            continue
+                    raise
             except unicorn.UcError as e:
-                if e.errno == unicorn.UC_ERR_EXCEPTION:
-
-                    self.CurPC = self.emu.reg_read(arm_const.UC_ARM_REG_PC) 
-                    if(self.do_llapi() == False):
-                        self.run = False
-                        print_exc()
-                    
-                    self.emu.context_update(self.thread_list[self.select_thread]["context"])
-                    self.thread_list[self.select_thread]["PC"] = self.CurPC
-
-                    
-                    #self.thread_switch()
-
-                    self.t1 = datetime.datetime.now().timestamp()
-                elif (e.errno == unicorn.UC_ERR_READ_UNMAPPED) or (e.errno == unicorn.UC_ERR_WRITE_UNMAPPED):
-                    self.run = False
-                    print_exc()
-                else:
-                    self.dumpreg()
-                    self.run = False
-                    print_exc()
+                self.dumpreg()
+                self.run = False
+                print_exc()

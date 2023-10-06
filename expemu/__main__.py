@@ -2,6 +2,7 @@ from typing import Tuple, Union, Deque
 from core import expemu
 from core import keys
 from collections import deque
+from threading import RLock
 import sys
 import os
 import threading
@@ -66,6 +67,7 @@ class PYGameUIInterface(expemu.UIInterface):
         for color in range(256):
             self.color_map.append(pygame.Color(color, color, color))
         self.key_event_queue: Deque[Tuple[bool, int]] = deque()
+        self.gui_lock = RLock()
 
     def fill_rect(self, x, y, w, h, c):
         self.surface.fill(
@@ -92,21 +94,23 @@ class PYGameUIInterface(expemu.UIInterface):
             return self.key_event_queue.popleft()
     
     def app_quit(self):
-        pygame.quit()
-        sys.exit()
+        with self.gui_lock:
+            pygame.quit()
+            sys.exit()
     
     def _push_key_event(self, pressed: bool, key_id: int):
         self.key_event_queue.append((pressed, key_id))
     
     def _render_on_screen(self):
-        self.screen.blit(
-            pygame.transform.scale(
-                self.surface,
-                (self.screen.get_width(), self.screen.get_height())
-            ),
-            (0, 0, self.screen.get_width(), self.screen.get_height())
-        )
-        pygame.display.flip()
+        with self.gui_lock:
+            self.screen.blit(
+                pygame.transform.scale(
+                    self.surface,
+                    (self.screen.get_width(), self.screen.get_height())
+                ),
+                (0, 0, self.screen.get_width(), self.screen.get_height())
+            )
+            pygame.display.flip()
 
 def mainloop():
     # parse args from cli
@@ -162,7 +166,10 @@ def mainloop():
                 if event.key in PYG_EMU_KEY_MAP:
                     gui._push_key_event(False, PYG_EMU_KEY_MAP[event.key])
         # render screen
-        gui._render_on_screen()
+        try:
+            gui._render_on_screen()
+        except pygame.error:
+            running = False
         clock.tick(60.0)
 
 if __name__ == "__main__":
