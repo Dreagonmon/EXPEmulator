@@ -1,6 +1,7 @@
 from . import llapi
 from unicorn import arm_const
 from typing import Union, Tuple
+from pathlib import PurePosixPath, PurePath
 import unicorn
 import datetime
 import time
@@ -15,6 +16,30 @@ def align_up(x, v):
     x = x & ~(v - 1)
     return x
 
+def pure_absvpath(vpath: PurePosixPath) -> PurePosixPath:
+        vpath = PurePosixPath("/", *vpath.parts)
+        parts = list(vpath.parts)
+        #flat path
+        p = 1 # parts[0] must be "/"
+        while p < len(parts):
+            name = parts[p]
+            if name == "..":
+                p -= 1
+                if p >= 1:
+                    del parts[p]
+                    del parts[p]
+                else:
+                    p = 1
+                    del parts[p]
+            else:
+                p += 1
+        return PurePosixPath(*parts)
+
+def virtual_path_to_real_path(rootfs: str, vpath: str):
+    abs_path = pure_absvpath(PurePosixPath(vpath))
+    rele_path = PurePosixPath(*(abs_path.parts[1:]))
+    sys_path = PurePath(rootfs, *rele_path.parts)
+    return str(sys_path)
 
 class UIInterface:
     def fill_rect(self, x, y, w, h, c):
@@ -130,10 +155,7 @@ class Emulator:
         elif swicode == llapi.LL_SWI_FS_DIR_MKDIR:
             p = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             path = self.read_str_from_vm(p) 
-            if(path[0] != '/'):
-                path = self.rootfs + "/" + path
-            else:
-                path = self.rootfs + path 
+            path = virtual_path_to_real_path(self.rootfs, path)
 
             # print("MKDIR:", path)
             os.makedirs(path, exist_ok=True) 
@@ -178,13 +200,10 @@ class Emulator:
             mmap_obj = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             mapto = self.emu.mem_read(mmap_obj, 4)
             mapto = int.from_bytes(mapto, byteorder="little", signed=False)
-            fpath = self.emu.mem_read(mmap_obj + 4, 4)
-            fpath = int.from_bytes(fpath, byteorder="little", signed=False)
-            fpath = self.read_str_from_vm(fpath)
-            if(fpath[0] != '/'):
-                fpath = self.rootfs + "/" + fpath
-            else:
-                fpath = self.rootfs + fpath 
+            fpath_addr_bin = self.emu.mem_read(mmap_obj + 4, 4)
+            fpath_addr = int.from_bytes(fpath_addr_bin, byteorder="little", signed=False)
+            fpath = self.read_str_from_vm(fpath_addr)
+            fpath = virtual_path_to_real_path(self.rootfs, fpath)
             offset = self.emu.mem_read(mmap_obj + 8, 4)
             offset = int.from_bytes(offset, byteorder="little", signed=False)
             size = self.emu.mem_read(mmap_obj + 12, 4)
@@ -270,10 +289,7 @@ class Emulator:
             if platform.system() == "Windows":
                 flag |= os.O_BINARY
 
-            if(path[0] != '/'):
-                path = self.rootfs + "/" + path
-            else:
-                path = self.rootfs + path
+            path = virtual_path_to_real_path(self.rootfs, path)
             # print("try open:", path, flag)
             if not os.path.exists(path):
                 if exp_fflag & llapi.CREAT:
@@ -383,10 +399,7 @@ class Emulator:
                 self.dir_open_list.pop(self.emu.reg_read(arm_const.UC_ARM_REG_R0))
             
             path = self.read_str_from_vm(self.emu.reg_read(arm_const.UC_ARM_REG_R1)) 
-            if(path[0] != '/'):
-                path = self.rootfs + "/" + path
-            else:
-                path = self.rootfs + path 
+            path = virtual_path_to_real_path(self.rootfs, path)
 
             if not os.path.exists(path):
                 self.emu.reg_write(arm_const.UC_ARM_REG_R0, -1)
