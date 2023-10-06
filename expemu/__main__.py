@@ -118,7 +118,6 @@ def mainloop():
     if not args.exp.lower().endswith(".exp"):
         print("Error: file should be *.exp")
         return
-    print(args)
     # init pygame
     pygame.init()
     pygame.display.set_caption("EXP Emulator")

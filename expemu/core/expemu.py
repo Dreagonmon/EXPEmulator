@@ -292,7 +292,7 @@ class Emulator:
             path = virtual_path_to_real_path(self.rootfs, path)
             # print("try open:", path, flag)
             if not os.path.exists(path):
-                if exp_fflag & llapi.CREAT:
+                if exp_fflag & llapi.O_CREAT:
                     flag |= os.O_CREAT
                     # print("create file.")
                 else:
