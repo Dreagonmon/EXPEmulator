@@ -181,7 +181,7 @@ class Emulator:
             return True
         
         elif swicode == llapi.LLAPI_APP_DISP_CLEAN: 
-            c = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
+            c = self.emu.reg_read(arm_const.UC_ARM_REG_R0) & 0xFF
             self.ui.fill_rect(0, 0, 256, 127, c)
             return True
         

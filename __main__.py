@@ -11,9 +11,6 @@ import pygame
 CWD = os.path.abspath(os.getcwd())
 ROOTFS = os.path.join(CWD, "rootfs")
 
-SCREEN_WIDTH = 256
-SCREEN_HEIGHT = 127
-SCREEN_SCALE = 3
 BLACK = pygame.Color(0, 0, 0)
 
 EMU_PYG_KEY_MAP = {
@@ -110,24 +107,24 @@ def mainloop():
         metavar="<ExistOS Program Path>",
         help="ExistOS program file path (*.exp)",
     )
+    parser.add_argument(
+        "-s", "--scale",
+        default=2,
+        type=int,
+        metavar="Scale",
+        help="Screen scale factor",
+    )
     args = parser.parse_args()
     if not args.exp.lower().endswith(".exp"):
         print("Error: file should be *.exp")
         return
+    print(args)
     # init pygame
     pygame.init()
     pygame.display.set_caption("EXP Emulator")
     # init screen
-    global SCREEN_SCALE # need to modify the scale value
-    modes = pygame.display.list_modes()
-    if isinstance(modes, list):
-        if len(modes) > 0 and isinstance(modes[0], tuple):
-            # max width / 2 / screen_width
-            SCREEN_SCALE = int(modes[0][0] / 3 / SCREEN_WIDTH)
-            SCREEN_SCALE = min(4, SCREEN_SCALE) # limit scale to 4
-            # print(f"Screen scale: {SCREEN_SCALE}")
     screen = pygame.display.set_mode(
-        (SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE),
+        (expemu.EMU_SCREEN_WIDTH * args.scale, expemu.EMU_SCREEN_HEIGHT * args.scale),
         vsync=True
     )
     screen.fill(BLACK)
