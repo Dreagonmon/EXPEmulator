@@ -163,11 +163,6 @@ class Emulator:
             self.run - False
             return True
         
-        elif swicode == llapi.LLAPI_THREAD_CREATE:
-            # FIXME: implement thread
-            self.emu.reg_write(arm_const.UC_ARM_REG_R0, -1)
-            return True
-        
         elif swicode == llapi.LLAPI_SET_PERF_LEVEL:
             _ = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             return True
