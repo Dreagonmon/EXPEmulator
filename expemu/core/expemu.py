@@ -107,10 +107,9 @@ class Emulator:
     def dumpreg(self):
         for i in range(arm_const.UC_ARM_REG_R0, arm_const.UC_ARM_REG_R12 + 1):
             print("R%d: %08X" % (i-arm_const.UC_ARM_REG_R0, self.emu.reg_read(i)))
-        print("R14:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_R14))
-        print("SP:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_SP))
-        print("LR:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_LR))
-        print("PC:%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_PC))
+        print("R13(SP):%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_SP))
+        print("R14(LR):%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_LR))
+        print("R15(PC):%08X" % self.emu.reg_read(arm_const.UC_ARM_REG_PC))
         print("Thread id: %d" % self.select_thread)
     
     def read_str_from_vm(self, vptr):
@@ -602,7 +601,7 @@ class Emulator:
     
     def thread_context_restore(self):
         self.emu.context_restore(self.thread_list[self.select_thread]["context"])
-        self.emu.reg_write(arm_const.UC_ARM_REG_PC, self.thread_list[self.select_thread]["PC"])
+        #self.emu.reg_write(arm_const.UC_ARM_REG_PC, self.thread_list[self.select_thread]["PC"])
 
     def emu_thread(self):
         self.run_cnt = 0
@@ -611,9 +610,6 @@ class Emulator:
         #self.runtime_status_t.daemon = True
         #self.runtime_status_t.start()
         
-        self.t0 = datetime.datetime.now().timestamp()
-        self.t1 = datetime.datetime.now().timestamp()
-        self.t2 = datetime.datetime.now().timestamp()
 
         self.select_thread = 0
         self.thread_list[self.tid] = {}
