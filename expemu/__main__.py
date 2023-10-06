@@ -54,6 +54,16 @@ EMU_PYG_KEY_MAP = {
     keys.KEY_BACKSPACE: pygame.K_BACKSPACE,
     keys.KEY_SHIFT:    pygame.K_LSHIFT,
     keys.KEY_ALPHA:    pygame.K_CAPSLOCK,
+
+    keys.KEY_COMMA:     pygame.K_COMMA,
+    keys.KEY_VARS:      pygame.K_v,
+    keys.KEY_MATH:      pygame.K_m,
+    keys.KEY_ABC:       pygame.K_a,
+    keys.KEY_SIN:       pygame.K_s,
+    keys.KEY_COS:       pygame.K_c,
+    keys.KEY_TAN:       pygame.K_t,
+    keys.KEY_LOG:       pygame.K_l,
+    keys.KEY_LN:        pygame.K_n,
 }
 
 PYG_EMU_KEY_MAP = {v:k for k, v in EMU_PYG_KEY_MAP.items()}
@@ -68,6 +78,7 @@ class PYGameUIInterface(expemu.UIInterface):
             self.color_map.append(pygame.Color(color, color, color))
         self.key_event_queue: Deque[Tuple[bool, int]] = deque()
         self.gui_lock = RLock()
+        self.font = pygame.font.SysFont("System", 20)
 
     def fill_rect(self, x, y, w, h, c):
         self.surface.fill(
@@ -80,7 +91,10 @@ class PYGameUIInterface(expemu.UIInterface):
         return sum(p.r + p.g + p.b) // (0xFF * 3)
     
     def draw_text(self, text, x, y, bg, fg):
-        print(f"Drawing '{text}' at {x}, {y} with color bg {bg}, fg {fg}.")
+        #print(f"Drawing '{text}' at {x}, {y} with color bg {bg}, fg {fg}.")
+        t = self.font.render(text, True, self.color_map[fg & 0xFF], self.color_map[bg & 0xFF])
+        with self.gui_lock:
+            self.surface.blit(t, (x,y))
     
     def is_key_down(self, key_id) -> bool:
         if key_id in EMU_PYG_KEY_MAP:
