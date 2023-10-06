@@ -548,6 +548,7 @@ class Emulator:
             self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_R14, 0) # set return address to NULL
             self.thread_list[self.tid]["delay"] = 0
             self.thread_list[self.tid]["PC"] = pcode
+            self.emu.reg_write(arm_const.UC_ARM_REG_R0, self.tid)
             self.tid += 1
             # print("Create Thread:%08X" % pcode)
             return True
