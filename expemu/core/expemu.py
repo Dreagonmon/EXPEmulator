@@ -414,8 +414,8 @@ class Emulator:
             self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)] = {}
             self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["path"] = path
             self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["iter"] = 0
-            self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["total"] = items
-            self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["items"] = os.listdir(path)
+            self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["total"] = items + 2 # LFS will return '.' and '..' as first 2 entries in a dir.
+            self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["items"] = [".", ".."] + os.listdir(path)
             # print("Open dir:", self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["path"],
             #      self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]["total"] )
             return True
@@ -438,12 +438,11 @@ class Emulator:
                 self.emu.reg_write(arm_const.UC_ARM_REG_R0, -1)
                 return True
             d = self.dir_open_list[self.emu.reg_read(arm_const.UC_ARM_REG_R0)]
-            # print("chk type:", d["path"] + d["items"][d["iter"] - 1])
-            isfile = os.path.isfile(d["path"] + d["items"][d["iter"] - 1])
-            if isfile:
-                self.emu.reg_write(arm_const.UC_ARM_REG_R0, 1)
+            isdir = os.path.isdir(d["path"] + d["items"][d["iter"] - 1])
+            if isdir:
+                self.emu.reg_write(arm_const.UC_ARM_REG_R0, llapi.FS_FILE_TYPE_DIR)
             else:
-                self.emu.reg_write(arm_const.UC_ARM_REG_R0, 2)
+                self.emu.reg_write(arm_const.UC_ARM_REG_R0, llapi.FS_FILE_TYPE_REG)
             return True
 
         elif swicode == llapi.LL_SWI_FS_DIR_GET_CUR_NAME:
