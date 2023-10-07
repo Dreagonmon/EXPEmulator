@@ -1,6 +1,7 @@
 from typing import Tuple, Union, Deque
 from core import expemu
 from core import keys
+from core.gdbserver import GDBServer
 from collections import deque
 from threading import RLock
 import sys
@@ -64,6 +65,7 @@ EMU_PYG_KEY_MAP = {
     keys.KEY_TAN:       pygame.K_t,
     keys.KEY_LOG:       pygame.K_l,
     keys.KEY_LN:        pygame.K_n,
+    keys.KEY_XTPHIN:    pygame.K_x,
 }
 
 PYG_EMU_KEY_MAP = {v:k for k, v in EMU_PYG_KEY_MAP.items()}
@@ -141,6 +143,15 @@ def mainloop():
         metavar="Scale",
         help="Screen scale factor",
     )
+
+    parser.add_argument(
+        "-g", "--gdb",
+        default=-1,
+        type=int,
+        metavar="PORT",
+        help="Enable and set GDB Server port",
+    )
+
     args = parser.parse_args()
     if not args.exp.lower().endswith(".exp"):
         print("Error: file should be *.exp")
@@ -161,6 +172,9 @@ def mainloop():
     os.makedirs(ROOTFS, exist_ok=True)
     # init emu
     emu = expemu.Emulator(gui, ROOTFS, args.exp)
+    if(args.gdb > 0):
+        emu.suspend = True
+        GDBServer(emu)
     # init pygame clock
     clock = pygame.time.Clock()
     # running
