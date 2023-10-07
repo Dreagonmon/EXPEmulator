@@ -4,7 +4,6 @@ from typing import Union, Tuple
 from pathlib import PurePosixPath, PurePath
 from traceback import print_exc
 import unicorn
-import datetime
 import time
 import os
 import platform
@@ -76,6 +75,9 @@ class Emulator:
         self.EXP_RAM_ADDR = 0x02080000
         self.EXP_RAM_SZ = 380 * 1024
         self.run = True
+        self.suspend = False
+        self.gdb_enable = False
+        self.inRunning = False
         
         self.emu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_ARM926)
 
@@ -94,6 +96,19 @@ class Emulator:
         self.thread_list = {}
         self.select_thread = 0
         self.tid = 0
+
+        
+        #Preparing MAIN Thread
+
+        self.select_thread = 0
+        self.thread_list[self.tid] = {}
+        self.thread_list[self.tid]["context"] = self.emu.context_save()
+        self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_SP, self.EXP_RAM_ADDR + self.EXP_RAM_SZ - 8)
+        self.thread_list[self.tid]["PC"] = self.EXP_ROM_ADDR + 4 * 8
+        self.thread_list[self.tid]["delay"] = 0
+        self.tid += 1
+        
+
 
     def mem_fault(self, uc: unicorn.unicorn.Uc, access, address, size, value, data):
         retn_addr = self.emu.reg_read(arm_const.UC_ARM_REG_R14)
@@ -609,19 +624,16 @@ class Emulator:
         #self.runtime_status_t = threading.Thread(target=self.runtime_status)
         #self.runtime_status_t.daemon = True
         #self.runtime_status_t.start()
-        
 
-        self.select_thread = 0
-        self.thread_list[self.tid] = {}
-        self.thread_list[self.tid]["context"] = self.emu.context_save()
-        self.thread_list[self.tid]["context"].reg_write(arm_const.UC_ARM_REG_SP, self.EXP_RAM_ADDR + self.EXP_RAM_SZ - 8)
-        self.thread_list[self.tid]["PC"] = self.EXP_ROM_ADDR + 4 * 8
-        self.thread_list[self.tid]["delay"] = 0
-        self.tid += 1
 
         # self.rc = 1000000
         self.rc = 100000
         while(self.run):
+            if self.suspend:
+                self.inRunning = False
+                time.sleep(0.1)
+                continue
+            self.inRunning = True
             self.thread_switch()
             try:
                 try:
@@ -651,8 +663,15 @@ class Emulator:
                             print(f"(THREAD {self.select_thread} END)")
                             del self.thread_list[self.select_thread]
                             continue
+                    elif e.errno == unicorn.UC_ERR_INSN_INVALID:
+                        if self.gdb_enable:
+                            self.thread_context_save()
+                            self.suspend = True
+                            continue
                     raise
             except unicorn.UcError as e:
                 self.dumpreg()
                 self.run = False
+                self.inRunning = False
+                self.suspend = True
                 print_exc()
