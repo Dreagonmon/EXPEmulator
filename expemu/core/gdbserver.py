@@ -4,6 +4,7 @@ import threading
 import re
 import unicorn
 import time
+import atexit
 from unicorn import Uc
 from unicorn import arm_const
 
@@ -22,43 +23,44 @@ TIME_FOR_WAITING_SUSPEND  =  0.5
 class GDBServer:
     def __init__(self, emulator) -> None:
         self.emu_sys = emulator
-        self.emu:Uc = self.emu_sys.emu
+        self.emu:Uc = self.emu_sys.get_internal_emu()
         self.gdb_select_thread = 0
         self.client_socket = None
 
         self.emu.hook_add(unicorn.UC_HOOK_INSN_INVALID,
                           self.emu_inval_ins_hook,
                           self.emu_sys.EXP_ROM_ADDR,
-                          self.emu_sys.EXP_ROM_ADDR + self.emu_sys.exp_size)
+                          self.emu_sys.EXP_ROM_ADDR + self.emu_sys.get_exp_size())
 
+        self.hwbreak = []
+    
+    def start_server(self, port):
         self.gdb_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.gdb_server.bind(('localhost',1234))
+        self.gdb_server.bind(('localhost', port))
         self.gdb_server.listen(1)
-        print("GDB server start, Waiting for GDB attach...")
-        
+        atexit.register(lambda: self.gdb_server.close())
+        print(f"GDB server start at localhost:{port}, Waiting for GDB attach...")
         self.server_thread_t = threading.Thread(target=self.server_thread)
         self.server_thread_t.daemon = True
         self.server_thread_t.start()
 
-        self.hwbreak = []
-
     def emu_inval_ins_hook(self, uc:Uc, userdata):
-        self.emu_sys.suspend = True
+        self.emu_sys.notify_suspend()
         uc.emu_stop()
         
-        self.gdb_select_thread = self.emu_sys.select_thread
+        self.gdb_select_thread = self.emu_sys.get_running_thread_id()
         pc = uc.reg_read(arm_const.UC_ARM_REG_PC)
         print("GDB: Break:%08x" % pc)
         print("GDB: sw hook Break at thread:", self.gdb_select_thread)
         self.send_rep("S%1d5" % self.gdb_select_thread) 
 
     def emu_hookcode_cb(self, uc:Uc, address, size, user_data):
-        self.emu_sys.suspend = True
+        self.emu_sys.notify_suspend()
         uc.emu_stop()
         pc = uc.reg_read(arm_const.UC_ARM_REG_PC)
         print("GDB: Break:%08x" % pc)
 
-        self.gdb_select_thread = self.emu_sys.select_thread
+        self.gdb_select_thread = self.emu_sys.get_running_thread_id()
         print("GDB: hw hook Break at thread:", self.gdb_select_thread)
         self.send_rep("S%1d5" % self.gdb_select_thread) 
         #self.send_rep("S05") 
@@ -83,33 +85,30 @@ class GDBServer:
 
     def suspend_emu(self, s:bool):
         if s:
-            wait = 0
-            self.emu_sys.suspend = True
-            while self.emu_sys.inRunning:
-                continue
+            self.emu_sys.wait_for_suspend()
         else:
             self.emu.ctl_flush_tb()
-            self.emu_sys.suspend = False
+            self.emu_sys.resume()
 
     def server_thread(self):
         while True:
             self.client_socket = None
             self.client_socket, self.client_address = self.gdb_server.accept()
             print("GDB Connected.")
+            self.emu_sys.update_gdb_status(True)
             self.suspend_emu(True)
-            self.emu_sys.gdb_enable = True
             while True:
                 dat = self.client_socket.recv(1024)
                 dat = dat.decode()
                 if(len(dat) == 0):
-                    self.emu_sys.gdb_enable = False
+                    self.emu_sys.update_gdb_status(False)
                     self.suspend_emu(False)
                     print("GDB disconnected.")
                     break
                 
                 if(dat[0] == '\03'):
                     self.suspend_emu(True)
-                    self.gdb_select_thread = self.emu_sys.select_thread
+                    self.gdb_select_thread = self.emu_sys.get_running_thread_id()
                     print("GDB: ESC Break at thread:", self.gdb_select_thread)
                     self.send_rep( "S%1d5" % self.gdb_select_thread) 
 
@@ -139,9 +138,9 @@ class GDBServer:
                         elif dat[1:].startswith("qTStatus") :
                             self.send_rep( "")
                         elif dat[1:].startswith("qfThreadInfo") :
-                            print("GDB: Query thread num:", self.emu_sys.tid)
+                            print("GDB: Query thread num:", self.emu_sys.get_thread_count())
                             send_str = "m"
-                            for i in range(0, self.emu_sys.tid):
+                            for i in range(0, self.emu_sys.get_thread_count()):
                                 send_str += ("%d," % i)
                             self.send_rep( send_str)
                         elif dat[1:].startswith("qsThreadInfo") :
@@ -191,13 +190,13 @@ class GDBServer:
                             self.send_rep( GDB_REP_OK)
                         elif dat[1:].startswith("g") : 
                             regs = []
-                            thread_cont = self.emu_sys.thread_list[self.gdb_select_thread]["context"]
+                            thread_cont = self.emu_sys.get_running_thread_obj(self.gdb_select_thread)["context"]
                             for i in range(arm_const.UC_ARM_REG_R0, arm_const.UC_ARM_REG_R12 + 1):
                                 regs.append(int.from_bytes(thread_cont.reg_read(i).to_bytes(4,"big"), "little"))
                             
                             regs.append(int.from_bytes(thread_cont.reg_read(arm_const.UC_ARM_REG_R13).to_bytes(4,"big"), "little"))
                             regs.append(int.from_bytes(thread_cont.reg_read(arm_const.UC_ARM_REG_R14).to_bytes(4,"big"), "little"))
-                            regs.append(int.from_bytes(self.emu_sys.thread_list[self.gdb_select_thread]["PC"].to_bytes(4,"big"), "little"))
+                            regs.append(int.from_bytes(self.emu_sys.get_running_thread_obj(self.gdb_select_thread)["PC"].to_bytes(4,"big"), "little"))
                             regs.append(int.from_bytes(thread_cont.reg_read(arm_const.UC_ARM_REG_CPSR).to_bytes(4,"big"), "little"))
 
                             st = ""
@@ -221,9 +220,9 @@ class GDBServer:
                                 regc = arm_const.UC_ARM_REG_LR
                             
                             if Reg != 15:
-                                self.emu_sys.thread_list[self.gdb_select_thread]["context"].reg_write(regc, Val)
+                                self.emu_sys.get_running_thread_obj(self.gdb_select_thread)["context"].reg_write(regc, Val)
                             else:
-                                self.emu_sys.thread_list[self.gdb_select_thread]["PC"] = Val
+                                self.emu_sys.get_running_thread_obj(self.gdb_select_thread)["PC"] = Val
 
                             self.send_rep( GDB_REP_OK)
 
@@ -267,9 +266,7 @@ class GDBServer:
                             self.send_rep( GDB_REP_OK)
 
                         elif dat[1:].startswith("Z") : #Z0,800359c,4#b2 Set hwbreak
-                            last_status = self.emu_sys.suspend
-                            if not self.emu_sys.suspend:
-                                self.suspend_emu(True)
+                            last_status = self.emu_sys.wait_for_suspend()
                             addr = re.findall(r',.*?,', dat)
                             addr = int(addr[0][1:-1], base=16)
                             sz = re.findall(r',.*?#', dat[4:])
@@ -278,15 +275,12 @@ class GDBServer:
                             h = self.emu.hook_add(unicorn.UC_HOOK_CODE, self.emu_hookcode_cb, begin=addr, end=addr + sz)
                             self.hwbreak.append((addr, h))
                             self.send_rep(GDB_REP_OK)
- 
-                            self.suspend_emu(last_status)
+                            if last_status:
+                                self.emu_sys.resume()
  
                             
                         elif dat[1:].startswith("z") : #Z0,800359c,4#b2 del hwbreak
-                            last_status = self.emu_sys.suspend
-                            if not self.emu_sys.suspend:
-                                self.suspend_emu(True)
- 
+                            last_status = self.emu_sys.wait_for_suspend()
                             addr = re.findall(r',.*?,', dat)
                             addr = int(addr[0][1:-1], base=16)
                             sz = re.findall(r',.*?#', dat[4:])
@@ -300,7 +294,8 @@ class GDBServer:
                                 ind += 1
  
                             self.send_rep(GDB_REP_OK)
-                            self.suspend_emu(last_status)
+                            if last_status:
+                                self.emu_sys.resume()
 
 
                         else:

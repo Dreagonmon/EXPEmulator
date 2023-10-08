@@ -171,10 +171,7 @@ def mainloop():
     # init rootfs
     os.makedirs(ROOTFS, exist_ok=True)
     # init emu
-    emu = expemu.Emulator(gui, ROOTFS, args.exp)
-    if(args.gdb > 0):
-        emu.suspend = True
-        GDBServer(emu)
+    emu = expemu.Emulator(gui, ROOTFS, args.exp, args.gdb)
     # init pygame clock
     clock = pygame.time.Clock()
     # running

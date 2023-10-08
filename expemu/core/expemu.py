@@ -1,4 +1,5 @@
 from . import llapi
+from .gdbserver import GDBServer
 from unicorn import arm_const
 from typing import Union, Tuple
 from pathlib import PurePosixPath, PurePath
@@ -7,6 +8,7 @@ import unicorn
 import time
 import os
 import platform
+import threading
 
 EMU_SCREEN_WIDTH = 256
 EMU_SCREEN_HEIGHT = 127
@@ -63,7 +65,7 @@ class UIInterface:
         raise NotImplemented()
 
 class Emulator:
-    def __init__(self, ui: UIInterface, rootfs_path: str, exp_file_path: str) -> None: 
+    def __init__(self, ui: UIInterface, rootfs_path: str, exp_file_path: str, gdb_port = -1) -> None: 
         self.ui = ui
         self.rootfs = rootfs_path
         self.exp_file_path = exp_file_path
@@ -75,19 +77,20 @@ class Emulator:
         self.EXP_RAM_ADDR = 0x02080000
         self.EXP_RAM_SZ = 380 * 1024
         self.run = True
-        self.suspend = False
-        self.gdb_enable = False
-        self.inRunning = False
+        self.emu_gdb_enable_flag = threading.Event()
+        self.emu_is_suspended_flag = threading.Event()
+        self.emu_running_flag = threading.Event()
+        if gdb_port > 0:
+            self.emu_is_suspended_flag.set()
+        else:
+            self.emu_running_flag.set() # default allow running if gdb not start
         
+        #Preparing emu
         self.emu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_ARM926)
-
         self.emu.mem_map(self.EXP_RAM_ADDR, self.EXP_RAM_SZ, unicorn.UC_PROT_ALL)
-        
         #self.emu.mem_map(0, 512*1024, UC_PROT_ALL)
         #self.emu.mem_map(0x02000000, 512*1024, UC_PROT_ALL)
-
         self.emu.mem_map(self.EXP_ROM_ADDR, align_up(self.exp_size, 4096), unicorn.UC_PROT_READ | unicorn.UC_PROT_EXEC)
-
         self.emu.mem_write(self.EXP_ROM_ADDR, open(self.exp_file_path, "rb").read())
         self.emu.hook_add(unicorn.UC_HOOK_MEM_UNMAPPED, self.mem_fault) 
         self.dir_open_list = {}
@@ -97,9 +100,7 @@ class Emulator:
         self.select_thread = 0
         self.tid = 0
 
-        
         #Preparing MAIN Thread
-
         self.select_thread = 0
         self.thread_list[self.tid] = {}
         self.thread_list[self.tid]["context"] = self.emu.context_save()
@@ -107,8 +108,49 @@ class Emulator:
         self.thread_list[self.tid]["PC"] = self.EXP_ROM_ADDR + 4 * 8
         self.thread_list[self.tid]["delay"] = 0
         self.tid += 1
-        
 
+        if gdb_port > 0:
+            self.gdb_server = GDBServer(self)
+            self.gdb_server.start_server(gdb_port)
+        
+    def wait_for_suspend(self):
+        """ wait emu suspend, return running status before suspend. """
+        running_status = self.emu_running_flag.is_set()
+        self.emu_running_flag.clear()
+        self.emu_is_suspended_flag.wait() # if already paused, there is no wait
+        return running_status
+    
+    def notify_suspend(self):
+        self.emu_running_flag.clear()
+    
+    def resume(self):
+        self.emu_is_suspended_flag.clear()
+        self.emu_running_flag.set()
+    
+    def update_gdb_status(self, is_enable):
+        if is_enable:
+            self.emu_gdb_enable_flag.set()
+        else:
+            self.emu_gdb_enable_flag.clear()
+    
+    def get_running_thread_id(self):
+        return self.select_thread
+    
+    def get_running_thread_obj(self, thread_id=-1):
+        if thread_id < 0:
+            thread_id = self.select_thread
+        if thread_id in self.thread_list:
+            return self.thread_list[thread_id]
+        return None
+    
+    def get_thread_count(self):
+        return self.tid
+    
+    def get_exp_size(self):
+        return self.exp_size
+    
+    def get_internal_emu(self):
+        return self.emu
 
     def mem_fault(self, uc: unicorn.unicorn.Uc, access, address, size, value, data):
         retn_addr = self.emu.reg_read(arm_const.UC_ARM_REG_R14)
@@ -571,7 +613,7 @@ class Emulator:
             #time.sleep(self.emu.reg_read(arm_const.UC_ARM_REG_R0)/1000.0)
             delay_ms = self.emu.reg_read(arm_const.UC_ARM_REG_R0)
             ms = int(time.time_ns() / 1_000_000)
-            self.thread_list[self.select_thread]["delay"] = ms + delay_ms
+            self.get_running_thread_obj()["delay"] = ms + delay_ms
             # print(f"Thread: {self.select_thread}, Delay: {delay_ms}")
             return True
         
@@ -600,47 +642,40 @@ class Emulator:
                 # not found, reset and try again
                 self.select_thread = 0
                 continue
-            if self.thread_list[self.select_thread]["delay"] > int(time.time_ns() / 1_000_000):
+            if self.get_running_thread_obj()["delay"] > int(time.time_ns() / 1_000_000):
                 # in delay, find next
                 # print(f"    thread in delay {self.select_thread}")
                 self.select_thread += 1
                 self.select_thread %= self.tid
                 finding_next_thread = True
                 continue
-        self.thread_list[self.select_thread]["delay"] = 0 # clear delay
+        self.get_running_thread_obj()["delay"] = 0 # clear delay
         # print(f"current tid: {self.select_thread}\n")
     
     def thread_context_save(self):
-        self.emu.context_update(self.thread_list[self.select_thread]["context"])
-        self.thread_list[self.select_thread]["PC"] = self.emu.reg_read(arm_const.UC_ARM_REG_PC)
+        self.emu.context_update(self.get_running_thread_obj()["context"])
+        self.get_running_thread_obj()["PC"] = self.emu.reg_read(arm_const.UC_ARM_REG_PC)
     
     def thread_context_restore(self):
-        self.emu.context_restore(self.thread_list[self.select_thread]["context"])
-        #self.emu.reg_write(arm_const.UC_ARM_REG_PC, self.thread_list[self.select_thread]["PC"])
+        self.emu.context_restore(self.get_running_thread_obj()["context"])
+        #self.emu.reg_write(arm_const.UC_ARM_REG_PC, self.get_running_thread_obj()["PC"])
 
     def emu_thread(self):
         self.run_cnt = 0
 
-        #self.runtime_status_t = threading.Thread(target=self.runtime_status)
-        #self.runtime_status_t.daemon = True
-        #self.runtime_status_t.start()
-
-
         # self.rc = 1000000
         self.rc = 100000
         while(self.run):
-            if self.suspend:
-                self.inRunning = False
-                time.sleep(0.1)
-                continue
-            self.inRunning = True
+            if not self.emu_running_flag.is_set():
+                self.emu_is_suspended_flag.set()
+                self.emu_running_flag.wait() # wait until running flag set
             self.thread_switch()
             try:
                 try:
                     self.thread_context_restore()
                     tmode = ((self.emu.reg_read(arm_const.UC_ARM_REG_CPSR) & (1 << 5)) > 0)
                     self.emu.emu_start(
-                        self.thread_list[self.select_thread]["PC"] if not tmode else self.thread_list[self.select_thread]["PC"] | 1, 
+                        self.get_running_thread_obj()["PC"] if not tmode else self.get_running_thread_obj()["PC"] | 1, 
                         self.EXP_ROM_ADDR + self.exp_size,0,self.rc
                     )
                     self.thread_context_save()
@@ -664,14 +699,16 @@ class Emulator:
                             del self.thread_list[self.select_thread]
                             continue
                     elif e.errno == unicorn.UC_ERR_INSN_INVALID:
-                        if self.gdb_enable:
+                        if self.emu_gdb_enable_flag.is_set():
                             self.thread_context_save()
-                            self.suspend = True
+                            self.notify_suspend()
                             continue
                     raise
             except unicorn.UcError as e:
+                # handle other uncaught errors
                 self.dumpreg()
-                self.run = False
-                self.inRunning = False
-                self.suspend = True
+                if self.emu_gdb_enable_flag.is_set():
+                    self.notify_suspend() # gdb enabled, not exit, just suspend
+                else:
+                    self.run = False
                 print_exc()
